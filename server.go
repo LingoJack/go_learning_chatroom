@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 type Server struct {
@@ -29,6 +30,7 @@ func (this *Server) Handler(conn net.Conn) {
 	fmt.Println("connect successfully")
 	user := NewUser(conn, this)
 	user.Online()
+	aliveChannel := make(chan bool)
 	go func() {
 		buffer := make([]byte, 4096)
 		len, err := conn.Read(buffer)
@@ -41,13 +43,27 @@ func (this *Server) Handler(conn net.Conn) {
 			return
 		}
 		msg := string(buffer[:len-1])
-		user.SendMsg(msg)
+		user.doMsg(msg)
+		aliveChannel <- true
 	}()
-	select {}
+	for {
+		select {
+		case <-aliveChannel:
+
+		case <-time.After(time.Second * 10):
+			// op1 这个是发送到chan了，后续才来消费，现在希望这个消息发出去之后才执行op2
+			user.sendMsgToUser(user, "too long no operation... you have been offline")
+			user.OffLine()
+			// op2
+			close(user.C)
+			conn.Close()
+		}
+	}
 }
 
 func (this *Server) BroadCast(user *User, msg string) {
-	sendMsg := "[" + user.Addr + "]" + user.Name + ": " + msg
+	// sendMsg := "[" + user.Addr + "]" + user.Name + ": " + msg + "\n"
+	sendMsg := format("[%s] %s: %s\n", user.Addr, user.Name, msg)
 	this.Message <- sendMsg
 }
 
@@ -64,16 +80,14 @@ func (this *Server) ListenMsg() {
 
 func (this *Server) Start() {
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s: %d", this.Ip, this.Port))
-	if err != nil {
-		fmt.Println("net listen error: ", err)
+	if exception(err, "net lisen erro") {
 		return
 	}
 	defer listener.Close()
 	go this.ListenMsg()
 	for {
 		connect, err := listener.Accept()
-		if err != nil {
-			fmt.Println("listener accept error: ", err)
+		if exception(err, "listen accept error") {
 			continue
 		}
 		go this.Handler(connect)
